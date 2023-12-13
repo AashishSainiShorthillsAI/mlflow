@@ -209,7 +209,6 @@ You may prefer the second, lower-level workflow for the following reasons:
 
 import collections
 import functools
-import hashlib
 import importlib
 import inspect
 import logging
@@ -269,6 +268,7 @@ from mlflow.utils import (
     check_port_connectivity,
     find_free_port,
     get_major_minor_py_version,
+    insecure_hash,
 )
 from mlflow.utils import env_manager as _EnvManager
 from mlflow.utils.annotations import deprecated, experimental
@@ -1473,6 +1473,8 @@ Compound types:
         pandas.DataFrame if isinstance(result_type, SparkStructType) else pandas.Series
     )
 
+    tracking_uri = mlflow.get_tracking_uri()
+
     @pandas_udf(result_type)
     def udf(
         iterator: Iterator[Tuple[Union[pandas.Series, pandas.DataFrame], ...]]
@@ -1492,6 +1494,9 @@ Compound types:
         if mlflow_testing:
             _MLFLOW_TESTING.set(mlflow_testing)
         scoring_server_proc = None
+        # set tracking_uri inside udf so that with spark_connect
+        # we can load the model from correct path
+        mlflow.set_tracking_uri(tracking_uri)
 
         if env_manager != _EnvManager.LOCAL:
             if should_use_spark_to_broadcast_file:
@@ -1578,7 +1583,7 @@ Compound types:
                 model_path = os.path.join(
                     tempfile.gettempdir(),
                     "mlflow",
-                    hashlib.sha1(model_uri.encode()).hexdigest(),
+                    insecure_hash.sha1(model_uri.encode()).hexdigest(),
                 )
                 try:
                     loaded_model = mlflow.pyfunc.load_model(model_path)

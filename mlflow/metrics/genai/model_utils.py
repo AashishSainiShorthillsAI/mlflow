@@ -5,20 +5,20 @@ import urllib.parse
 import requests
 
 from mlflow.exceptions import MlflowException
-from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
+from mlflow.protos.databricks_pb2 import BAD_REQUEST, INVALID_PARAMETER_VALUE, UNAUTHENTICATED
 from mlflow.utils.uri import append_to_uri_path
 
 ROUTE_TYPE = "llm/v1/completions"
 
 
 # TODO: improve this name
-def score_model_on_payload(model_uri, payload):
+def score_model_on_payload(model_uri, payload, timeout):
     """Call the model identified by the given uri with the given payload."""
 
     prefix, suffix = _parse_model_uri(model_uri)
 
     if prefix == "openai":
-        return _call_openai_api(suffix, payload)
+        return _call_openai_api(suffix, payload, timeout)
     elif prefix == "gateway":
         return _call_gateway_api(suffix, payload)
     elif prefix in ("model", "runs"):
@@ -43,7 +43,7 @@ def _parse_model_uri(model_uri):
     return scheme, path
 
 
-def _call_openai_api(openai_uri, payload):
+def _call_openai_api(openai_uri, payload, timeout):
     """Wrapper around the OpenAI API to make it compatible with the MLflow Gateway API."""
     from mlflow.gateway.config import RouteConfig
     from mlflow.gateway.providers.openai import OpenAIProvider
@@ -54,13 +54,23 @@ def _call_openai_api(openai_uri, payload):
             error_code=INVALID_PARAMETER_VALUE,
         )
 
+    config = {"openai_api_key": os.environ["OPENAI_API_KEY"]}
+    if "OPENAI_API_BASE" in os.environ:
+        config["openai_api_base"] = os.environ["OPENAI_API_BASE"]
+    if "OPENAI_API_TYPE" in os.environ:
+        config["openai_api_type"] = os.environ["OPENAI_API_TYPE"]
+    if "OPENAI_API_VERSION" in os.environ:
+        config["openai_api_version"] = os.environ["OPENAI_API_VERSION"]
+    if "OPENAI_DEPLOYMENT_NAME" in os.environ:
+        config["openai_deployment_name"] = os.environ["OPENAI_DEPLOYMENT_NAME"]
+
     route_config = RouteConfig(
         name="openai",
         route_type=ROUTE_TYPE,
         model={
             "name": openai_uri,
             "provider": "openai",
-            "config": {"openai_api_key": os.environ["OPENAI_API_KEY"]},
+            "config": config,
         },
     )
     openai_provider = OpenAIProvider(route_config)
@@ -72,7 +82,22 @@ def _call_openai_api(openai_uri, payload):
         url=append_to_uri_path(openai_provider._request_base_url, "chat/completions"),
         headers=openai_provider._request_headers,
         json=openai_provider._add_model_to_payload_if_necessary(payload),
+        timeout=timeout,
     ).json()
+
+    if "error" in resp:
+        error_type = resp["error"]["type"]
+        if error_type == "invalid_request_error":
+            raise MlflowException(
+                f"Invalid Request to OpenAI. Error response:\n {resp}", error_code=BAD_REQUEST
+            )
+        elif error_type == "authentication_error":
+            raise MlflowException(
+                f"Authentication Error for OpenAI. Error response:\n {resp}",
+                error_code=UNAUTHENTICATED,
+            )
+        else:
+            raise MlflowException(f"Error response from OpenAI:\n {resp}")
 
     return json.loads(openai_provider._prepare_completion_response_payload(resp).json())
 
